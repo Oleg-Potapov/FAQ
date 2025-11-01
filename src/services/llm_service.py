@@ -73,59 +73,61 @@ class LlmService:
         self.logger.info(f"Извлечено {len(text)} символов текста из PDF")
         return text
 
-    async def process_uploaded_file(self, file: UploadFile) -> dict:
-        self.logger.info(f"Обработка загруженного файла: {file.filename}")
-        filename = file.filename.lower()
+    async def process_uploaded_files(self, files: List[UploadFile]) -> List[dict]:
+        results = []
+        for file in files:
+            self.logger.info(f"Обработка загруженного файла: {file.filename}")
+            filename = file.filename.lower()
 
-        if filename.endswith(".txt") or filename.endswith(".md"):
-            content_bytes = await file.read()
-            text = content_bytes.decode("utf-8")
-            self.logger.info(f"Извлечен текст из текстового файла, длина {len(text)}")
-        elif filename.endswith(".pdf"):
-            text = await self.extract_text_from_pdf(file)
-        else:
-            self.logger.error(f"Неподдерживаемый формат файла: {filename}")
-            raise ValueError("Поддерживаются файлы форматов .txt, .md и .pdf")
+            if filename.endswith(".txt") or filename.endswith(".md"):
+                content_bytes = await file.read()
+                text = content_bytes.decode("utf-8")
+                self.logger.info(f"Извлечен текст из текстового файла, длина {len(text)}")
+            elif filename.endswith(".pdf"):
+                text = await self.extract_text_from_pdf(file)
+            else:
+                self.logger.error(f"Неподдерживаемый формат файла: {filename}")
+                raise ValueError("Поддерживаются файлы форматов .txt, .md и .pdf")
 
-        if not text.strip():
-            self.logger.error("Файл не содержит текста для обработки")
-            raise ValueError("Файл не содержит текста для обработки")
+            if not text.strip():
+                self.logger.error("Файл не содержит текста для обработки")
+                raise ValueError("Файл не содержит текста для обработки")
 
-        chunks = self.split_text_into_chunks(text)
+            chunks = self.split_text_into_chunks(text)
 
-        self.logger.info("Начинаю генерацию эмбеддингов для чанков через OpenAI API...")
-        embeddings = []
-        for i, chunk_text in enumerate(chunks):
-            self.logger.debug(f"Создаю эмбеддинг для чанка {i+1}/{len(chunks)}")
-            response = self.openai.embeddings.create(
-                input=chunk_text,
-                model="text-embedding-3-large"
+            self.logger.info("Начинаю генерацию эмбеддингов для чанков через OpenAI API...")
+            embeddings = []
+            for i, chunk_text in enumerate(chunks):
+                self.logger.debug(f"Создаю эмбеддинг для чанка {i + 1}/{len(chunks)}")
+                response = self.openai.embeddings.create(
+                    input=chunk_text,
+                    model="text-embedding-3-large"
+                )
+                embedding = response.data[0].embedding
+                embeddings.append(embedding)
+            self.logger.info(f"Сгенерировано {len(embeddings)} эмбеддингов")
+
+            metadatas = [{"source": file.filename} for _ in chunks]
+            ids = [f"{file.filename}_chunk_{i}" for i in range(len(chunks))]
+
+            self.logger.info(f"Добавляю чанки и эмбеддинги в коллекцию ChromaDB (количество: {len(chunks)})")
+            self.collection.add(
+                documents=chunks,
+                embeddings=embeddings,
+                metadatas=metadatas,
+                ids=ids
             )
-            embedding = response.data[0].embedding
-            embeddings.append(embedding)
-        self.logger.info(f"Сгенерировано {len(embeddings)} эмбеддингов")
 
-        metadatas = [{"source": file.filename} for _ in chunks]
-        ids = [f"{file.filename}_chunk_{i}" for i in range(len(chunks))]
+            self.chunk_texts.extend(chunks)
+            self._save_chunks_cache()
 
-        self.logger.info(f"Добавляю чанки и эмбеддинги в коллекцию ChromaDB (количество: {len(chunks)})")
-        self.collection.add(
-            documents=chunks,
-            embeddings=embeddings,
-            metadatas=metadatas,
-            ids=ids
-        )
-
-        self.chunk_texts.extend(chunks)
-        self._save_chunks_cache()
-
-        self.logger.info(f"Файл {file.filename} успешно проиндексирован")
-
-        return {
-            "filename": file.filename,
-            "chunk_count": len(chunks),
-            "message": "Документ успешно загружен и проиндексирован"
-        }
+            self.logger.info(f"Файл {file.filename} успешно проиндексирован")
+            results.append({
+                "filename": file.filename,
+                "chunk_count": len(chunks),
+                "message": "Документ успешно загружен и проиндексирован"
+            })
+        return results
 
     def _search_similar_chunks(self, query: str, top_k=5) -> List[str]:
         self.logger.info(f"Поиск релевантных чанков для запроса: {query}")

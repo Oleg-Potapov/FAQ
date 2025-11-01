@@ -1,3 +1,4 @@
+from typing import List
 import uvicorn
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from src.api.schemas import QuestionRequest
@@ -11,9 +12,9 @@ llm_service = LlmService(openai_api_key=OPENAI_API_KEY)
 
 
 @app.post("/api/documents")
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(file: List[UploadFile] = File(...)):
     try:
-        result = await llm_service.process_uploaded_file(file)
+        result = await llm_service.process_uploaded_files(file)
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
