@@ -5,3 +5,5 @@
 **/__pycache__/
 /migrations/README
 /migrations/script.py.mako
+/cache/
+*.log
