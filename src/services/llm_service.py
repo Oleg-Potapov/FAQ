@@ -1,5 +1,6 @@
 import os
 import pickle
+import time
 from typing import List
 from fastapi import UploadFile, HTTPException
 import PyPDF2
@@ -15,6 +16,13 @@ class LlmService:
                  cache_folder="cache",
                  chunk_size=500,
                  overlap=100):
+        self.reference_qa = {
+            "Не приходят уведомления на email": "Проверьте спам и настройки уведомлений в профиле.",
+            "Ошибка \"401 Unauthorized\"": "Проверьте действительность API ключа и формат заголовка.",
+            "Не отображаются задачи в проекте": "Проверьте фильтры и права доступа.",
+            "Приложение работает медленно": "Очистите кэш браузера, попробуйте другой браузер.",
+            "Не удаётся загрузить файл": "Максимальный размер — 50 МБ. Проверьте соединение."
+        }
         self.repository = repository
         self.logger = setup_logger(__name__)
         self.logger.info("Инициализация LlmService...")
@@ -188,36 +196,9 @@ class LlmService:
             self.logger.error(f"Ошибка при поиске релевантных чанков: {e}")
             raise HTTPException(status_code=500, detail="Ошибка внутреннего сервиса поиска")
 
-#     def answer_question(self, question: str, top_k=5) -> str:
-#         try:
-#             self.logger.info(f"Обработка вопроса: {question}")
-#             relevant_chunks = self._search_similar_chunks(question, top_k=top_k)
-#             context = "\n\n".join(relevant_chunks)
 #
-#             prompt = f"""Ты помощник компании EORA. Используй следующий контекст из наших проектов и дай профессиональный,
-# полный и понятный ответ на вопрос пользователя.
-#
-# Контекст:
-# {context}
-#
-# Вопрос: {question}
-# Ответ:"""
-#
-#             self.logger.info("Запрос ответа у OpenAI Chat Completion...")
-#             chat_resp = self.openai.chat.completions.create(
-#                 model="gpt-4.1-mini",
-#                 messages=[{"role": "user", "content": prompt}],
-#                 max_tokens=600,
-#                 temperature=0.3,
-#             )
-#             answer = chat_resp.choices[0].message.content
-#             self.logger.info("Получен ответ от модели OpenAI")
-#             return answer
-#         except Exception as e:
-#             self.logger.error(f"Ошибка при обработке вопроса: {e}")
-#             raise HTTPException(status_code=500, detail="Ошибка внутреннего сервиса ответа на вопрос")
-
     async def answer_question(self, question: str, top_k=5) -> dict:
+        start_time = time.perf_counter()
         try:
             self.logger.info(f"Обработка вопроса: {question}")
             relevant_chunks = self._search_similar_chunks(question, top_k=top_k)
@@ -241,9 +222,12 @@ class LlmService:
             )
             answer = chat_resp.choices[0].message.content
             usage = chat_resp.usage  # словарь с токенами: prompt_tokens, completion_tokens, total_tokens
-            #usage_dict = usage.__dict__ if usage else {}
             usage_dict = to_dict_recursive(usage) if usage else {}
-            self.logger.info(f"Получен ответ от модели OpenAI, токены: {usage}")
+            elapsed_time = (time.perf_counter() - start_time) * 1000  # миллисекунды
+            self.logger.info(
+                f"Получен ответ от модели OpenAI, токены: {usage}, "
+                f"Время ответа: {elapsed_time:.2f} ms"
+            )
             await self.repository.save_story_faq(question, answer, usage_dict)
             return {
                 "answer": answer,
