@@ -6,16 +6,20 @@ import PyPDF2
 import chromadb
 from openai import OpenAI
 from src.core.logger import setup_logger
+from src.core.utils import to_dict_recursive
+from src.repositories.faq_repositories import FaqRepository
 
 
 class LlmService:
-    def __init__(self, openai_api_key,
+    def __init__(self, repository: FaqRepository, openai_api_key,
                  cache_folder="cache",
                  chunk_size=500,
                  overlap=100):
+        self.repository = repository
         self.logger = setup_logger(__name__)
         self.logger.info("Инициализация LlmService...")
         self.openai = OpenAI(api_key=openai_api_key)
+
         self.chunk_size = chunk_size
         self.overlap = overlap
         self.cache_folder = cache_folder
@@ -184,20 +188,49 @@ class LlmService:
             self.logger.error(f"Ошибка при поиске релевантных чанков: {e}")
             raise HTTPException(status_code=500, detail="Ошибка внутреннего сервиса поиска")
 
-    def answer_question(self, question: str, top_k=5) -> str:
+#     def answer_question(self, question: str, top_k=5) -> str:
+#         try:
+#             self.logger.info(f"Обработка вопроса: {question}")
+#             relevant_chunks = self._search_similar_chunks(question, top_k=top_k)
+#             context = "\n\n".join(relevant_chunks)
+#
+#             prompt = f"""Ты помощник компании EORA. Используй следующий контекст из наших проектов и дай профессиональный,
+# полный и понятный ответ на вопрос пользователя.
+#
+# Контекст:
+# {context}
+#
+# Вопрос: {question}
+# Ответ:"""
+#
+#             self.logger.info("Запрос ответа у OpenAI Chat Completion...")
+#             chat_resp = self.openai.chat.completions.create(
+#                 model="gpt-4.1-mini",
+#                 messages=[{"role": "user", "content": prompt}],
+#                 max_tokens=600,
+#                 temperature=0.3,
+#             )
+#             answer = chat_resp.choices[0].message.content
+#             self.logger.info("Получен ответ от модели OpenAI")
+#             return answer
+#         except Exception as e:
+#             self.logger.error(f"Ошибка при обработке вопроса: {e}")
+#             raise HTTPException(status_code=500, detail="Ошибка внутреннего сервиса ответа на вопрос")
+
+    async def answer_question(self, question: str, top_k=5) -> dict:
         try:
             self.logger.info(f"Обработка вопроса: {question}")
             relevant_chunks = self._search_similar_chunks(question, top_k=top_k)
             context = "\n\n".join(relevant_chunks)
 
             prompt = f"""Ты помощник компании EORA. Используй следующий контекст из наших проектов и дай профессиональный,
-полный и понятный ответ на вопрос пользователя.
+            полный и понятный ответ на вопрос пользователя.
 
-Контекст:
-{context}
+            Контекст:
+            {context}
 
-Вопрос: {question}
-Ответ:"""
+            Вопрос: {question}
+            Ответ:"""
 
             self.logger.info("Запрос ответа у OpenAI Chat Completion...")
             chat_resp = self.openai.chat.completions.create(
@@ -207,9 +240,15 @@ class LlmService:
                 temperature=0.3,
             )
             answer = chat_resp.choices[0].message.content
-            self.logger.info("Получен ответ от модели OpenAI")
-            return answer
+            usage = chat_resp.usage  # словарь с токенами: prompt_tokens, completion_tokens, total_tokens
+            #usage_dict = usage.__dict__ if usage else {}
+            usage_dict = to_dict_recursive(usage) if usage else {}
+            self.logger.info(f"Получен ответ от модели OpenAI, токены: {usage}")
+            await self.repository.save_story_faq(question, answer, usage_dict)
+            return {
+                "answer": answer,
+                "usage": usage_dict,
+            }
         except Exception as e:
             self.logger.error(f"Ошибка при обработке вопроса: {e}")
-            raise HTTPException(status_code=500, detail="Ошибка внутреннего сервиса ответа на вопрос")
-
+            raise
