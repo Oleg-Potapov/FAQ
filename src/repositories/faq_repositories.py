@@ -22,14 +22,6 @@ class FaqRepository(AbstractFaqRepository):
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    # async def get_story_faq(self) -> FaqStory:
-    #     try:
-    #         result = await self.session.execute(select(FaqStory))
-    #         rates = result.scalars().first()
-    #         return rates
-    #     except SQLAlchemyError as e:
-    #         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-
     async def get_story_faq(self, limit: int = 20) -> List[FaqStory]:
         try:
             stmt = (

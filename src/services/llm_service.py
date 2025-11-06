@@ -9,6 +9,7 @@ from openai import OpenAI
 from src.core.logger import setup_logger
 from src.core.utils import to_dict_recursive
 from src.repositories.faq_repositories import FaqRepository
+from rouge_score import rouge_scorer
 
 
 class LlmService:
@@ -39,12 +40,43 @@ class LlmService:
             self.logger.info("Инициализация клиента ChromaDB...")
             self.chroma_client = chromadb.Client()
             self.collection = self.chroma_client.get_or_create_collection(name="faq_chunks")
+            self.reference_collection = self.chroma_client.get_or_create_collection(name="reference_questions")
         except Exception as e:
             self.logger.error(f"Ошибка инициализации ChromaDB: {e}")
             raise HTTPException(status_code=500, detail="Ошибка инициализации БД")
 
+        self._create_reference_embeddings()
+
         self.chunk_texts: List[str] = []
         self._load_chunks_cache()
+
+    def _create_reference_embeddings(self):
+        try:
+            self.logger.info("Генерация и сохранение эмбеддингов эталонных вопросов в ChromaDB...")
+            questions = list(self.reference_qa.keys())
+            embeddings = []
+            for question in questions:
+                response = self.openai.embeddings.create(
+                    input=question,
+                    model="text-embedding-3-large"
+                )
+                embeddings.append(response.data[0].embedding)
+
+            ids = [f"ref_question_{i}" for i in range(len(questions))]
+            metadatas = [{"source": "reference_qa"} for _ in questions]
+
+            # Очистка коллекции эталонных вопросов для предотвращения дублирования
+            self.reference_collection.delete(where={"source": "reference_qa"})
+
+            self.reference_collection.add(
+                documents=questions,
+                embeddings=embeddings,
+                metadatas=metadatas,
+                ids=ids
+            )
+            self.logger.info(f"Добавлено {len(questions)} эталонных вопросов в коллекцию ChromaDB")
+        except Exception as e:
+            self.logger.error(f"Ошибка при создании и сохранении эмбеддингов эталонных вопросов: {e}")
 
     def _load_chunks_cache(self):
         try:
@@ -57,7 +89,6 @@ class LlmService:
                 self.logger.info("Кеш чанков отсутствует, загружать нечего")
         except Exception as e:
             self.logger.error(f"Ошибка загрузки кеша чанков: {e}")
-            # не прерываем работу, кеш просто не загрузится
 
     def _save_chunks_cache(self):
         try:
@@ -165,7 +196,6 @@ class LlmService:
                     "message": "Документ успешно загружен и проиндексирован"
                 })
             except HTTPException:
-                # HTTPException пробрасываем дальше для FastAPI
                 raise
             except Exception as e:
                 self.logger.error(f"Неожиданная ошибка при обработке файла {file.filename}: {e}")
@@ -176,7 +206,7 @@ class LlmService:
                 })
         return results
 
-    def _search_similar_chunks(self, query: str, top_k=5) -> List[str]:
+    def _search_similar_chunks(self, query: str, top_k=20) -> List[str]:
         try:
             self.logger.info(f"Поиск релевантных чанков для запроса: {query}")
             response = self.openai.embeddings.create(
@@ -196,7 +226,47 @@ class LlmService:
             self.logger.error(f"Ошибка при поиске релевантных чанков: {e}")
             raise HTTPException(status_code=500, detail="Ошибка внутреннего сервиса поиска")
 
-#
+    def evaluate_answer(self, generated_answer: str, reference_answer: str) -> dict:
+        scorer = rouge_scorer.RougeScorer(['rouge1', 'rougeL'], use_stemmer=True)
+        scores = scorer.score(reference_answer, generated_answer)
+        return {
+            'rouge1_f1': scores['rouge1'].fmeasure,
+            'rougeL_f1': scores['rougeL'].fmeasure,
+        }
+
+    async def log_evaluation(self, question: str, generated_answer: str):
+        try:
+            response = self.openai.embeddings.create(
+                input=question,
+                model="text-embedding-3-large"
+            )
+            query_embedding = response.data[0].embedding
+
+            results = self.reference_collection.query(
+                query_embeddings=[query_embedding],
+                n_results=1,
+                include=["documents", "distances"]
+            )
+            matched_questions = results['documents'][0]
+            distances = results['distances'][0]
+
+            if not matched_questions:
+                self.logger.info("Похожий эталонный вопрос не найден для оценки.")
+                return
+
+            ref_question = matched_questions[0]
+            ref_answer = self.reference_qa.get(ref_question)
+            similarity = 1 - distances[0]
+
+            metrics = self.evaluate_answer(generated_answer, ref_answer)
+
+            self.logger.info(f"Оценка ответа на вопрос '{question}':")
+            self.logger.info(f"Эталонный вопрос: '{ref_question}', Сходство: {similarity:.4f}")
+            self.logger.info(f"Метрики ROUGE: {metrics}")
+
+        except Exception as e:
+            self.logger.error(f"Ошибка при логировании оценки: {e}")
+
     async def answer_question(self, question: str, top_k=5) -> dict:
         start_time = time.perf_counter()
         try:
@@ -204,14 +274,20 @@ class LlmService:
             relevant_chunks = self._search_similar_chunks(question, top_k=top_k)
             context = "\n\n".join(relevant_chunks)
 
-            prompt = f"""Ты помощник компании EORA. Используй следующий контекст из наших проектов и дай профессиональный,
-            полный и понятный ответ на вопрос пользователя.
+            prompt = f"""Ты — профессиональный помощник компании EORA, который отвечает на вопросы клиентов точно и понятно.
 
-            Контекст:
-            {context}
+Используй исключительно информацию из следующего контекста. Не добавляй ничего лишнего.
 
-            Вопрос: {question}
-            Ответ:"""
+Контекст:
+{context}
+
+Вопрос:
+{question}
+
+Дай полный, профессиональный и понятный ответ на вопрос.
+Ответ:
+"""
+
 
             self.logger.info("Запрос ответа у OpenAI Chat Completion...")
             chat_resp = self.openai.chat.completions.create(
@@ -221,14 +297,17 @@ class LlmService:
                 temperature=0.3,
             )
             answer = chat_resp.choices[0].message.content
-            usage = chat_resp.usage  # словарь с токенами: prompt_tokens, completion_tokens, total_tokens
+            usage = chat_resp.usage
             usage_dict = to_dict_recursive(usage) if usage else {}
-            elapsed_time = (time.perf_counter() - start_time) * 1000  # миллисекунды
+            elapsed_time = (time.perf_counter() - start_time) * 1000
             self.logger.info(
                 f"Получен ответ от модели OpenAI, токены: {usage}, "
                 f"Время ответа: {elapsed_time:.2f} ms"
             )
             await self.repository.save_story_faq(question, answer, usage_dict)
+
+            await self.log_evaluation(question, answer)
+
             return {
                 "answer": answer,
                 "usage": usage_dict,
@@ -236,3 +315,4 @@ class LlmService:
         except Exception as e:
             self.logger.error(f"Ошибка при обработке вопроса: {e}")
             raise
+

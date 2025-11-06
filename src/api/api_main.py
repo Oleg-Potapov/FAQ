@@ -48,7 +48,8 @@ async def ask(question: QuestionRequest, db: AsyncSession = Depends(get_async_se
         cached_answer = redis_client.get(key_hash)
         if cached_answer:
             logger.info(f"Cache hit for question hash {key_hash}")
-            return {"answer": json.loads(cached_answer)}
+            cached_dict = json.loads(cached_answer)
+            return {"answer": cached_dict["answer"]}
         logger.info(f"Cache miss for question hash {key_hash}")
     except Exception as redis_error:
         logger.error(f"Ошибка при работе с Redis: {redis_error}")
@@ -68,23 +69,6 @@ async def ask(question: QuestionRequest, db: AsyncSession = Depends(get_async_se
     except Exception as e:
         logger.error(f"Ошибка при обработке вопроса: {e}")
         raise HTTPException(status_code=500, detail=f"Ошибка при обработке вопроса: {str(e)}")
-# def ask(question: QuestionRequest, db: AsyncSession = Depends(get_async_session)):
-#     if not question:
-#         raise HTTPException(status_code=400, detail="Пустой вопрос")
-#
-#     question_text = question.question.strip().lower()
-#     cached_answer = redis_client.get(question_text)
-#
-#     if cached_answer:
-#         return {"answer": cached_answer}
-#
-#     try:
-#         llm_service = LlmService(FaqRepository(db), openai_api_key=OPENAI_API_KEY)
-#         answer = llm_service.answer_question(question.question)
-#         redis_client.setex(question_text, 3600, answer)
-#         return {"answer": answer}
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=f"Ошибка при обработке вопроса: {str(e)}")
 
 
 @app.get("/api/story", response_model=ListFaqStoryResponse)
