@@ -1,0 +1,44 @@
+version: "3.7"
+services:
+  db:
+    image: postgres:11
+    container_name: db_app
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    env_file:
+      - .env-docker
+
+  redis:
+    image: redis:5
+    container_name: redis_app
+    depends_on:
+      - db
+
+  app:
+    build:
+      context: .
+    env_file:
+      - .env-docker
+    container_name: fastapi_app
+    command: ["/app/docker/app.sh"]
+    ports:
+      - 9998:8000
+    depends_on:
+      - db
+      - redis
+
+  chromadb:
+    image: chromadb/chroma:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma_data:/data
+    restart: unless-stopped
+    depends_on:
+      - db
+      - redis
+      - app
+
+volumes:
+  chroma_data:
+  db_data:

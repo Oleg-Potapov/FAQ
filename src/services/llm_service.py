@@ -288,7 +288,6 @@ class LlmService:
 Ответ:
 """
 
-
             self.logger.info("Запрос ответа у OpenAI Chat Completion...")
             chat_resp = self.openai.chat.completions.create(
                 model="gpt-4.1-mini",

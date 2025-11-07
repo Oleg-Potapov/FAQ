@@ -7,3 +7,4 @@
 /migrations/script.py.mako
 /cache/
 *.log
+/data/
